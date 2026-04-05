@@ -1,11 +1,11 @@
-import { createClient } from "@deepgram/sdk";
+import { DeepgramClient } from "@deepgram/sdk";
 import { db } from "@my-better-t-app/db";
 import { recordings, speakerSegments, transcriptions } from "@my-better-t-app/db/schema";
 import { env } from "@my-better-t-app/env/server";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 
-const deepgram = createClient(env.DEEPGRAM_API_KEY);
+const deepgram = new DeepgramClient({ apiKey: env.DEEPGRAM_API_KEY });
 
 export const transcribeRoutes = new Hono();
 
@@ -30,39 +30,74 @@ transcribeRoutes.post("/transcribe", async (c) => {
       .values({ status: "recording" })
       .returning();
 
-    const { result, error } = await deepgram.listen.prerecorded.transcribeFile(buffer, {
+    const result = await deepgram.listen.v1.media.transcribeFile(buffer, {
       model: "nova-3",
       smart_format: true,
       diarize: true,
       punctuate: true,
-      utterances: true,
-      mimetype: audio.type || "audio/wav",
+      utterances: false,
+      language: "en",
+      multichannel: false,
     });
 
-    if (error) {
-      await db
-        .update(recordings)
-        .set({ status: "failed" })
-        .where(eq(recordings.id, recording.id));
-      return c.json({ error: "Deepgram transcription failed", details: error.message }, 502);
-    }
-
-    const utterances = result.results?.utterances ?? [];
     const channel = result.results?.channels?.[0]?.alternatives?.[0];
     const fullText = channel?.transcript ?? "";
+    const words = channel?.words ?? [];
     const duration = result.metadata?.duration ?? null;
 
     const speakerSet = new Set<number>();
-    const segments = utterances.map((u) => {
-      speakerSet.add(u.speaker);
-      return {
-        speakerLabel: `user${u.speaker + 1}`,
-        text: u.transcript,
-        startTime: u.start,
-        endTime: u.end,
-        confidence: u.confidence,
-      };
-    });
+    const segments: {
+      speakerLabel: string;
+      text: string;
+      startTime: number;
+      endTime: number;
+      confidence: number;
+    }[] = [];
+
+    if (words.length > 0) {
+      let currentSpeaker = words[0].speaker ?? 0;
+      let currentWords: string[] = [words[0].punctuated_word ?? words[0].word ?? ""];
+      let segStart = words[0].start ?? 0;
+      let segEnd = words[0].end ?? 0;
+      let confSum = words[0].speaker_confidence ?? 0;
+      let confCount = 1;
+
+      for (let i = 1; i < words.length; i++) {
+        const w = words[i];
+        const speaker = w.speaker ?? 0;
+
+        if (speaker !== currentSpeaker) {
+          speakerSet.add(currentSpeaker);
+          segments.push({
+            speakerLabel: `user${currentSpeaker + 1}`,
+            text: currentWords.join(" "),
+            startTime: segStart,
+            endTime: segEnd,
+            confidence: confSum / confCount,
+          });
+
+          currentSpeaker = speaker;
+          currentWords = [];
+          segStart = w.start ?? 0;
+          confSum = 0;
+          confCount = 0;
+        }
+
+        currentWords.push(w.punctuated_word ?? w.word ?? "");
+        segEnd = w.end ?? 0;
+        confSum += w.speaker_confidence ?? 0;
+        confCount++;
+      }
+
+      speakerSet.add(currentSpeaker);
+      segments.push({
+        speakerLabel: `user${currentSpeaker + 1}`,
+        text: currentWords.join(" "),
+        startTime: segStart,
+        endTime: segEnd,
+        confidence: confSum / confCount,
+      });
+    }
 
     const [transcription] = await db
       .insert(transcriptions)
@@ -99,6 +134,7 @@ transcribeRoutes.post("/transcribe", async (c) => {
       segments,
     });
   } catch (err) {
+    console.error("Transcription error:", err);
     const message = err instanceof Error ? err.message : "Unknown error";
     return c.json({ error: "Transcription failed", details: message }, 500);
   }

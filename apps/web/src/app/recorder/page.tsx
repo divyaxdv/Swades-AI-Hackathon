@@ -1,7 +1,9 @@
 "use client"
 
 import { useCallback, useRef, useState } from "react"
-import { Download, Mic, Pause, Play, Square, Trash2 } from "lucide-react"
+import { Download, Languages, Mic, Pause, Play, Square, Trash2 } from "lucide-react"
+
+import { env } from "@my-better-t-app/env/web"
 
 import { Button } from "@my-better-t-app/ui/components/button"
 import {
@@ -74,10 +76,30 @@ function ChunkRow({ chunk, index }: { chunk: WavChunk; index: number }) {
   )
 }
 
+interface TranscriptionSegment {
+  speakerLabel: string
+  text: string
+  startTime: number
+  endTime: number
+  confidence: number
+}
+
+interface TranscriptionResult {
+  recordingId: string
+  transcriptionId: string
+  fullText: string
+  speakerCount: number
+  segments: TranscriptionSegment[]
+}
+
 export default function RecorderPage() {
   const [deviceId] = useState<string | undefined>()
   const { status, start, stop, pause, resume, chunks, elapsed, stream, clearChunks } =
     useRecorder({ chunkDuration: 5, deviceId })
+
+  const [transcribing, setTranscribing] = useState(false)
+  const [transcription, setTranscription] = useState<TranscriptionResult | null>(null)
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
 
   const isRecording = status === "recording"
   const isPaused = status === "paused"
@@ -90,6 +112,80 @@ export default function RecorderPage() {
       start()
     }
   }, [isActive, stop, start])
+
+  const handleTranscribe = useCallback(async () => {
+    if (chunks.length === 0) return
+
+    setTranscribing(true)
+    setTranscriptionError(null)
+    setTranscription(null)
+
+    try {
+      const totalLength = chunks.reduce(
+        (acc, chunk) => acc + chunk.duration * 16000 * 2,
+        0,
+      )
+      const mergedBuffer = new ArrayBuffer(totalLength)
+      const mergedView = new Uint8Array(mergedBuffer)
+      let offset = 0
+
+      for (const chunk of chunks) {
+        const buf = await chunk.blob.arrayBuffer()
+        const data = new Uint8Array(buf).slice(44)
+        mergedView.set(data, offset)
+        offset += data.byteLength
+      }
+
+      const wavHeader = new ArrayBuffer(44)
+      const view = new DataView(wavHeader)
+      const sampleRate = 16000
+      const numSamples = offset / 2
+
+      const writeStr = (off: number, str: string) => {
+        for (let i = 0; i < str.length; i++) {
+          view.setUint8(off + i, str.charCodeAt(i))
+        }
+      }
+      writeStr(0, "RIFF")
+      view.setUint32(4, 36 + offset, true)
+      writeStr(8, "WAVE")
+      writeStr(12, "fmt ")
+      view.setUint32(16, 16, true)
+      view.setUint16(20, 1, true)
+      view.setUint16(22, 1, true)
+      view.setUint32(24, sampleRate, true)
+      view.setUint32(28, sampleRate * 2, true)
+      view.setUint16(32, 2, true)
+      view.setUint16(34, 16, true)
+      writeStr(36, "data")
+      view.setUint32(40, offset, true)
+
+      const mergedBlob = new Blob(
+        [wavHeader, mergedView.slice(0, offset)],
+        { type: "audio/wav" },
+      )
+
+      const formData = new FormData()
+      formData.append("audio", mergedBlob, "recording.wav")
+
+      const res = await fetch(`${env.NEXT_PUBLIC_SERVER_URL}/api/transcribe`, {
+        method: "POST",
+        body: formData,
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || "Transcription request failed")
+      }
+
+      const data: TranscriptionResult = await res.json()
+      setTranscription(data)
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setTranscribing(false)
+    }
+  }, [chunks])
 
   return (
     <div className="container mx-auto flex max-w-lg flex-col items-center gap-6 px-4 py-8">
@@ -182,15 +278,60 @@ export default function RecorderPage() {
             {chunks.map((chunk, i) => (
               <ChunkRow key={chunk.id} chunk={chunk} index={i} />
             ))}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mt-2 gap-1.5 self-end text-destructive"
-              onClick={clearChunks}
-            >
-              <Trash2 className="size-3" />
-              Clear all
-            </Button>
+            <div className="mt-2 flex items-center justify-between">
+              <Button
+                size="sm"
+                className="gap-1.5"
+                onClick={handleTranscribe}
+                disabled={transcribing || isActive}
+              >
+                <Languages className="size-3" />
+                {transcribing ? "Transcribing..." : "Transcribe"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-destructive"
+                onClick={clearChunks}
+              >
+                <Trash2 className="size-3" />
+                Clear all
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {transcriptionError && (
+        <Card className="w-full border-destructive/50">
+          <CardContent className="pt-6">
+            <p className="text-sm text-destructive">{transcriptionError}</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {transcription && (
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle>Transcription</CardTitle>
+            <CardDescription>
+              {transcription.speakerCount} speaker{transcription.speakerCount !== 1 ? "s" : ""} detected
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {transcription.segments.map((seg, i) => (
+              <div key={`${seg.startTime}-${i}`} className="flex gap-3 text-sm">
+                <span className="shrink-0 rounded bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+                  {seg.speakerLabel}
+                </span>
+                <div className="flex flex-col gap-0.5">
+                  <p>{seg.text}</p>
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {seg.startTime.toFixed(1)}s – {seg.endTime.toFixed(1)}s
+                  </span>
+                </div>
+              </div>
+            ))}
           </CardContent>
         </Card>
       )}
