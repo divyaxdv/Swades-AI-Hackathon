@@ -1,143 +1,179 @@
-# Reliable Recording Chunking Pipeline
+# Reliable Recording & Transcription Pipeline
 
-An assignment for building a reliable chunking setup that ensures recording data stays accurate in all cases — no data loss, no silent failures.
+A real-time audio recording system with reliable chunk storage, speaker diarization, and transcription. Records audio in the browser, identifies speakers by voice, and produces labeled transcripts (user1, user2, etc.).
 
 ## How It Works
 
 ```
 Client (Browser)
     │
-    ├── 1. Record & chunk data on the client side
-    ├── 2. Store chunks in OPFS (Origin Private File System)
-    ├── 3. Upload chunks to a storage bucket
-    ├── 4. On success → acknowledge (ack) to the database
+    ├── 1. Capture audio via microphone (16 kHz, 16-bit PCM WAV)
+    ├── 2. Split into 5-second chunks
+    ├── 3. Store each chunk in OPFS (Origin Private File System)
+    ├── 4. Upload chunks to MinIO storage bucket
+    ├── 5. Acknowledge (ack) each successful upload to the database
+    ├── 6. Transcribe → Deepgram Nova-3 with speaker diarization
     │
     └── Recovery: if DB has ack but chunk is missing from bucket
         └── Re-send from OPFS → bucket
 ```
 
-**Main objective:** In all cases, the recording data stays accurate. OPFS acts as the durable client-side buffer — chunks are only cleared after the bucket and DB are both confirmed in sync.
-
-### Flow Details
-
-1. **Client-side chunking** — Recording data is split into chunks in the browser
-2. **OPFS storage** — Each chunk is persisted to the Origin Private File System before any network call, so nothing is lost if the tab closes or the network drops
-3. **Bucket upload** — Chunks are uploaded to a storage bucket (can be a local bucket for testing, e.g. MinIO or a local S3-compatible store)
-4. **DB acknowledgment** — Once the bucket confirms receipt, an ack record is written to the database
-5. **Reconciliation** — If the DB shows an ack but the chunk is missing from the bucket (e.g. bucket purge, replication lag), the client re-uploads from OPFS to restore consistency
+**Main objective:** Zero data loss. OPFS acts as the durable client-side buffer — chunks are only cleared after the bucket and DB are both confirmed in sync.
 
 ## Tech Stack
 
-- **Next.js** — Frontend (App Router)
-- **Hono** — Backend API server
-- **Bun** — Runtime
-- **Drizzle ORM + PostgreSQL** — Database
-- **TailwindCSS + shadcn/ui** — UI
-- **Turborepo** — Monorepo build system
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Next.js 16 (App Router), React 19, TailwindCSS v4, shadcn/ui |
+| Backend | Hono 4.8 on Bun |
+| Database | PostgreSQL + Drizzle ORM |
+| Storage | MinIO (S3-compatible object store) |
+| Transcription | Deepgram Nova-3 (speech-to-text + speaker diarization) |
+| Monorepo | Turborepo + npm workspaces |
 
-## Getting Started
+## Prerequisites
+
+- **Node.js >= 20.9.0** (managed automatically via `.nvmrc` if you use [nvm](https://github.com/nvm-sh/nvm))
+- **Bun** — server runtime ([install](https://bun.sh))
+- **Docker Desktop** — for PostgreSQL and MinIO containers
+- **Deepgram API key** — get one free at [deepgram.com](https://console.deepgram.com)
+
+## Quick Start (Single Command)
 
 ```bash
+# 1. Clone and install
+git clone <repo-url>
+cd Swades-AI-Hackathon
 npm install
+
+# 2. Set up environment variables (see below)
+
+# 3. Start everything
+npm start
 ```
 
-### Database Setup
+`npm start` automatically handles:
+1. Switches to the correct Node.js version (via nvm)
+2. Starts Docker containers (PostgreSQL + MinIO)
+3. Pushes the database schema
+4. Starts both the API server and frontend
 
-1. Make sure you have a PostgreSQL database set up.
-2. Update your `apps/server/.env` with your PostgreSQL connection details.
-3. Apply the schema:
+Once running:
+- **Frontend:** [http://localhost:3001](http://localhost:3001)
+- **API Server:** [http://localhost:3000](http://localhost:3000)
+- **MinIO Console:** [http://localhost:9001](http://localhost:9001) (admin: `minioadmin` / `minioadmin`)
 
-```bash
-npm run db:push
+## Environment Variables
+
+### `apps/server/.env`
+
+```env
+DATABASE_URL=postgresql://postgres:password@localhost:5433/my-better-t-app
+CORS_ORIGIN=http://localhost:3001
+NODE_ENV=development
+
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=recordings
 ```
 
-### Run Development
+### `apps/web/.env`
 
-```bash
-npm run dev
+```env
+NEXT_PUBLIC_SERVER_URL=http://localhost:3000
 ```
-
-- Web app: [http://localhost:3001](http://localhost:3001)
-- API server: [http://localhost:3000](http://localhost:3000)
-
-## Load Testing
-
-Target: **300,000 requests** to validate the chunking pipeline under heavy load.
-
-### Setup
-
-Use a load testing tool like [k6](https://k6.io), [autocannon](https://github.com/mcollina/autocannon), or [artillery](https://artillery.io) to simulate concurrent chunk uploads.
-
-Example with **k6**:
-
-```js
-import http from "k6/http";
-import { check } from "k6";
-
-export const options = {
-  scenarios: {
-    chunk_uploads: {
-      executor: "constant-arrival-rate",
-      rate: 5000,           // 5,000 req/s
-      timeUnit: "1s",
-      duration: "1m",       // → 300K requests in 60s
-      preAllocatedVUs: 500,
-      maxVUs: 1000,
-    },
-  },
-};
-
-export default function () {
-  const payload = JSON.stringify({
-    chunkId: `chunk-${__VU}-${__ITER}`,
-    data: "x".repeat(1024), // 1KB dummy chunk
-  });
-
-  const res = http.post("http://localhost:3000/api/chunks/upload", payload, {
-    headers: { "Content-Type": "application/json" },
-  });
-
-  check(res, {
-    "status 200": (r) => r.status === 200,
-  });
-}
-```
-
-Run:
-
-```bash
-k6 run load-test.js
-```
-
-### What to Validate
-
-- **No data loss** — every ack in the DB has a matching chunk in the bucket
-- **OPFS recovery** — chunks survive client disconnects and can be re-uploaded
-- **Throughput** — server handles sustained 5K req/s without dropping chunks
-- **Consistency** — reconciliation catches and repairs any bucket/DB mismatches after the run
 
 ## Project Structure
 
 ```
-recoding-assignment/
+Swades-AI-Hackathon/
 ├── apps/
-│   ├── web/         # Frontend (Next.js) — chunking, OPFS, upload logic
-│   └── server/      # Backend API (Hono) — bucket upload, DB ack
+│   ├── web/                # Frontend (Next.js)
+│   │   ├── src/
+│   │   │   ├── app/recorder/   # Recorder page — capture, chunk, transcribe
+│   │   │   ├── hooks/
+│   │   │   │   ├── use-recorder.ts      # Audio capture + WAV chunking
+│   │   │   │   └── use-chunk-sync.ts    # OPFS storage + upload + ack flow
+│   │   │   └── lib/
+│   │   │       └── opfs.ts             # OPFS read/write/delete helpers
+│   │   └── .env
+│   └── server/             # Backend API (Hono on Bun)
+│       ├── src/
+│       │   ├── index.ts             # App entry — mounts routes
+│       │   ├── routes/
+│       │   │   ├── transcribe.ts    # POST /api/transcribe, GET /api/transcriptions/:id
+│       │   │   └── chunks.ts        # Chunk upload, ack, reconcile, missing
+│       │   └── lib/
+│       │       └── s3.ts            # S3 client configured for MinIO
+│       └── .env
 ├── packages/
-│   ├── ui/          # Shared shadcn/ui components and styles
-│   ├── db/          # Drizzle ORM schema & queries
-│   ├── env/         # Type-safe environment config
-│   └── config/      # Shared TypeScript config
+│   ├── db/                 # Drizzle ORM schema + Docker Compose
+│   │   ├── src/schema/     # recordings, transcriptions, speakerSegments, chunks, chunkAcks
+│   │   └── docker-compose.yml   # PostgreSQL + MinIO services
+│   ├── ui/                 # Shared shadcn/ui components
+│   ├── env/                # Type-safe environment config (Zod)
+│   └── config/             # Shared TypeScript config
+├── start.sh                # Automated startup script
+├── .nvmrc                  # Pins Node.js version
+├── turbo.json              # Turborepo task config
+└── package.json
 ```
+
+## API Endpoints
+
+### Transcription
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/transcribe` | Upload audio file → transcribe with speaker diarization |
+| `GET` | `/api/transcriptions/:id` | Fetch a stored transcription by ID |
+
+### Chunk Pipeline
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/recordings` | Create a new recording session, returns `recordingId` |
+| `POST` | `/api/chunks/upload` | Upload a chunk (multipart form: `chunk`, `recordingId`, `chunkIndex`) |
+| `POST` | `/api/chunks/ack` | Acknowledge a chunk upload (`chunkId`) |
+| `POST` | `/api/chunks/reconcile` | Compare DB acks vs bucket contents, flag mismatches |
+| `GET` | `/api/chunks/missing` | List chunks with ack but missing from bucket |
+| `GET` | `/api/chunks/list` | List all objects in the MinIO bucket |
+
+## Database Schema
+
+- **recordings** — each recording session (status, duration, timestamps)
+- **transcriptions** — full transcription text + speaker count, linked to a recording
+- **speaker_segments** — individual speaker turns (label, text, start/end time, confidence)
+- **chunks** — audio chunk metadata (bucket key, size, index), linked to a recording
+- **chunk_acks** — upload acknowledgments (bucket verified flag)
 
 ## Available Scripts
 
-- `npm run dev` — Start all apps in development mode
-- `npm run build` — Build all apps
-- `npm run dev:web` — Start only the web app
-- `npm run dev:server` — Start only the server
-- `npm run check-types` — TypeScript type checking
-- `npm run db:push` — Push schema changes to database
-- `npm run db:generate` — Generate database client/types
-- `npm run db:migrate` — Run database migrations
-- `npm run db:studio` — Open database studio UI
+| Script | Description |
+|--------|-------------|
+| `npm start` | Start everything (Docker + DB schema + dev servers) |
+| `npm run dev` | Start dev servers only (server + web) |
+| `npm run dev:web` | Start only the frontend |
+| `npm run dev:server` | Start only the API server |
+| `npm run build` | Build all apps |
+| `npm run check-types` | TypeScript type checking |
+| `npm run db:push` | Push schema changes to database |
+| `npm run db:studio` | Open Drizzle Studio (database UI) |
+| `npm run db:start` | Start Docker containers |
+| `npm run db:stop` | Stop Docker containers |
+| `npm run db:down` | Remove Docker containers + volumes |
+| `npm run check` | Run linter (Ultracite/Oxlint) |
+| `npm run fix` | Auto-fix lint + formatting issues |
+
+## Features
+
+- **Real-time recording** with live waveform visualization
+- **5-second WAV chunking** at 16 kHz / 16-bit PCM
+- **Speaker diarization** — identifies speakers by voice (user1, user2, etc.)
+- **OPFS durability** — survives tab crashes, offline, browser restarts
+- **Automatic reconciliation** — detects and repairs bucket/DB mismatches
+- **Upload support** — drag-and-drop or file picker for pre-recorded audio
+- **Transcription overlay** — results appear directly over the chunks panel
