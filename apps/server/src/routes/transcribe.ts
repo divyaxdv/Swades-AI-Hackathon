@@ -35,7 +35,7 @@ transcribeRoutes.post("/transcribe", async (c) => {
       smart_format: true,
       diarize: true,
       punctuate: true,
-      utterances: false,
+      utterances: true,
       language: "en",
       multichannel: false,
     });
@@ -43,7 +43,18 @@ transcribeRoutes.post("/transcribe", async (c) => {
     const channel = result.results?.channels?.[0]?.alternatives?.[0];
     const fullText = channel?.transcript ?? "";
     const words = channel?.words ?? [];
+    const utterances = result.results?.utterances ?? [];
     const duration = result.metadata?.duration ?? null;
+
+    console.log(
+      "[diarize] words with speaker data:",
+      words.slice(0, 5).map((w) => ({ word: w.word, speaker: w.speaker })),
+    );
+    console.log(
+      "[diarize] utterances:",
+      utterances.length,
+      utterances.slice(0, 3).map((u) => ({ speaker: u.speaker, text: u.transcript?.slice(0, 40) })),
+    );
 
     const speakerSet = new Set<number>();
     const segments: {
@@ -54,7 +65,19 @@ transcribeRoutes.post("/transcribe", async (c) => {
       confidence: number;
     }[] = [];
 
-    if (words.length > 0) {
+    if (utterances.length > 0) {
+      for (const u of utterances) {
+        const speaker = u.speaker ?? 0;
+        speakerSet.add(speaker);
+        segments.push({
+          speakerLabel: `user${speaker + 1}`,
+          text: u.transcript ?? "",
+          startTime: u.start ?? 0,
+          endTime: u.end ?? 0,
+          confidence: u.confidence ?? 0,
+        });
+      }
+    } else if (words.length > 0) {
       let currentSpeaker = words[0].speaker ?? 0;
       let currentWords: string[] = [words[0].punctuated_word ?? words[0].word ?? ""];
       let segStart = words[0].start ?? 0;
@@ -98,6 +121,8 @@ transcribeRoutes.post("/transcribe", async (c) => {
         confidence: confSum / confCount,
       });
     }
+
+    console.log("[diarize] speakers detected:", speakerSet.size, [...speakerSet]);
 
     const [transcription] = await db
       .insert(transcriptions)
