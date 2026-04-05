@@ -1,8 +1,8 @@
 services:
-  # Hono API server (Bun)
   - type: web
     runtime: docker
     name: transcription-server
+    plan: free
     dockerfilePath: ./Dockerfile.server
     preDeployCommand: cd packages/db && bunx drizzle-kit push
     envVars:
@@ -17,36 +17,13 @@ services:
       - key: DEEPGRAM_API_KEY
         sync: false
       - key: MINIO_ENDPOINT
-        value: http://minio:9000
+        sync: false
       - key: MINIO_ACCESS_KEY
-        fromService:
-          name: minio
-          type: pserv
-          envVarKey: MINIO_ROOT_USER
+        sync: false
       - key: MINIO_SECRET_KEY
-        fromService:
-          name: minio
-          type: pserv
-          envVarKey: MINIO_ROOT_PASSWORD
+        sync: false
       - key: MINIO_BUCKET
-        value: recordings
-
-  # MinIO object storage (private, not public)
-  - type: pserv
-    runtime: docker
-    name: minio
-    image:
-      url: docker.io/minio/minio:latest
-    dockerCommand: server /data --console-address ":9001"
-    envVars:
-      - key: MINIO_ROOT_USER
-        value: minioadmin
-      - key: MINIO_ROOT_PASSWORD
-        generateValue: true
-    disk:
-      name: minio-data
-      mountPath: /data
-      sizeGB: 10
+        sync: false
 
 databases:
   - name: transcription-db
