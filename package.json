@@ -7,6 +7,7 @@
   ],
   "type": "module",
   "scripts": {
+    "start": "bash start.sh",
     "dev": "turbo dev",
     "build": "turbo build",
     "check-types": "turbo check-types",
