@@ -10,6 +10,7 @@
     "start": "bun run dist/index.mjs"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.0.0",
     "@my-better-t-app/db": "*",
     "@my-better-t-app/env": "*",
     "dotenv": "^17.2.2",
