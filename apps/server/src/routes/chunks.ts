@@ -1,12 +1,21 @@
 import { HeadObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 import { db } from "@my-better-t-app/db";
-import { chunkAcks, chunks } from "@my-better-t-app/db/schema";
+import { chunkAcks, chunks, recordings } from "@my-better-t-app/db/schema";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 
 import { BUCKET, s3 } from "../lib/s3";
 
 export const chunkRoutes = new Hono();
+
+chunkRoutes.post("/recordings", async (c) => {
+  const [recording] = await db
+    .insert(recordings)
+    .values({ status: "recording" })
+    .returning();
+
+  return c.json({ recordingId: recording.id });
+});
 
 chunkRoutes.post("/chunks/upload", async (c) => {
   const body = await c.req.parseBody();

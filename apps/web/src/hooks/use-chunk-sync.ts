@@ -51,6 +51,13 @@ async function ackChunk(chunkId: string): Promise<void> {
   if (!res.ok) throw new Error(`Ack failed: ${res.status}`)
 }
 
+export async function createServerRecording(): Promise<string> {
+  const res = await fetch(`${SERVER}/api/recordings`, { method: "POST" })
+  if (!res.ok) throw new Error(`Failed to create recording: ${res.status}`)
+  const data = await res.json()
+  return data.recordingId as string
+}
+
 export function useChunkSync({ recordingId }: UseChunkSyncOptions) {
   const [syncState, setSyncState] = useState<SyncedChunk[]>([])
   const pendingRef = useRef<Set<number>>(new Set())

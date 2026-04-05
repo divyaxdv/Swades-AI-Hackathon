@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Check, CloudUpload, Download, Languages, Loader2, Mic, Pause, Play, Square, Trash2, X } from "lucide-react"
+import { Check, CloudUpload, Download, Languages, Loader2, Mic, Pause, Play, Square, Trash2, Upload, X } from "lucide-react"
 
 import { env } from "@my-better-t-app/env/web"
 
@@ -14,7 +14,7 @@ import {
   CardTitle,
 } from "@my-better-t-app/ui/components/card"
 import { LiveWaveform } from "@/components/ui/live-waveform"
-import { useChunkSync, type ChunkSyncStatus } from "@/hooks/use-chunk-sync"
+import { createServerRecording, useChunkSync, type ChunkSyncStatus } from "@/hooks/use-chunk-sync"
 import { useRecorder, type WavChunk } from "@/hooks/use-recorder"
 
 function formatTime(seconds: number) {
@@ -133,14 +133,18 @@ export default function RecorderPage() {
     }
   }, [chunks, recordingId, persistAndSync])
 
-  const handlePrimary = useCallback(() => {
+  const handlePrimary = useCallback(async () => {
     if (isActive) {
       stop()
     } else {
-      const newId = crypto.randomUUID()
-      setRecordingId(newId)
-      lastSyncedCount.current = 0
-      start()
+      try {
+        const newId = await createServerRecording()
+        setRecordingId(newId)
+        lastSyncedCount.current = 0
+        start()
+      } catch {
+        setTranscriptionError("Failed to create recording session")
+      }
     }
   }, [isActive, stop, start])
 
@@ -149,6 +153,37 @@ export default function RecorderPage() {
     clearSync()
     lastSyncedCount.current = 0
   }, [clearChunks, clearSync])
+
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+
+  const handleUpload = useCallback(async (file: File) => {
+    setUploading(true)
+    setTranscriptionError(null)
+    setTranscription(null)
+
+    try {
+      const formData = new FormData()
+      formData.append("audio", file, file.name)
+
+      const res = await fetch(`${env.NEXT_PUBLIC_SERVER_URL}/api/transcribe`, {
+        method: "POST",
+        body: formData,
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || "Upload transcription failed")
+      }
+
+      const data: TranscriptionResult = await res.json()
+      setTranscription(data)
+    } catch (err) {
+      setTranscriptionError(err instanceof Error ? err.message : "Unknown error")
+    } finally {
+      setUploading(false)
+    }
+  }, [])
 
   const handleTranscribe = useCallback(async () => {
     if (chunks.length === 0) return
@@ -279,6 +314,31 @@ export default function RecorderPage() {
               )}
             </Button>
 
+            {/* Upload file */}
+            {!isActive && (
+              <Button
+                size="lg"
+                variant="outline"
+                className="gap-2"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                <Upload className="size-4" />
+                {uploading ? "Uploading..." : "Upload"}
+              </Button>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) handleUpload(file)
+                e.target.value = ""
+              }}
+            />
+
             {/* Pause / Resume */}
             {isActive && (
               <Button
@@ -304,78 +364,131 @@ export default function RecorderPage() {
         </CardContent>
       </Card>
 
-      {/* Chunks */}
+      {/* Chunks / Transcription (shared area) */}
       {chunks.length > 0 && (
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>Chunks</CardTitle>
-            <CardDescription>{chunks.length} recorded</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {chunks.map((chunk, i) => (
-              <ChunkRow
-                key={chunk.id}
-                chunk={chunk}
-                index={i}
-                syncStatus={syncState.find((s) => s.chunkIndex === i)?.status}
-              />
-            ))}
-            <div className="mt-2 flex items-center justify-between">
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={handleTranscribe}
-                disabled={transcribing || isActive}
-              >
-                <Languages className="size-3" />
-                {transcribing ? "Transcribing..." : "Transcribe"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5 text-destructive"
-                onClick={handleClearAll}
-              >
-                <Trash2 className="size-3" />
-                Clear all
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {transcriptionError && (
-        <Card className="w-full border-destructive/50">
-          <CardContent className="pt-6">
-            <p className="text-sm text-destructive">{transcriptionError}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {transcription && (
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>Transcription</CardTitle>
-            <CardDescription>
-              {transcription.speakerCount} speaker{transcription.speakerCount !== 1 ? "s" : ""} detected
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            {transcription.segments.map((seg, i) => (
-              <div key={`${seg.startTime}-${i}`} className="flex gap-3 text-sm">
-                <span className="shrink-0 rounded bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
-                  {seg.speakerLabel}
-                </span>
-                <div className="flex flex-col gap-0.5">
-                  <p>{seg.text}</p>
-                  <span className="text-[10px] text-muted-foreground tabular-nums">
-                    {seg.startTime.toFixed(1)}s – {seg.endTime.toFixed(1)}s
-                  </span>
-                </div>
+        <div className="relative w-full">
+          {/* Chunks card (hidden behind overlay when transcription is visible) */}
+          <Card className="w-full">
+            <CardHeader>
+              <CardTitle>Chunks</CardTitle>
+              <CardDescription>{chunks.length} recorded</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-2">
+              {chunks.map((chunk, i) => (
+                <ChunkRow
+                  key={chunk.id}
+                  chunk={chunk}
+                  index={i}
+                  syncStatus={syncState.find((s) => s.chunkIndex === i)?.status}
+                />
+              ))}
+              <div className="mt-2 flex items-center justify-between">
+                <Button
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={handleTranscribe}
+                  disabled={transcribing || isActive}
+                >
+                  <Languages className="size-3" />
+                  {transcribing ? "Transcribing..." : "Transcribe"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-destructive"
+                  onClick={handleClearAll}
+                >
+                  <Trash2 className="size-3" />
+                  Clear all
+                </Button>
               </div>
-            ))}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          {/* Overlay: transcribing spinner / error / result */}
+          {(transcribing || transcriptionError || transcription) && (
+            <Card className="absolute inset-0 z-10 flex flex-col overflow-auto border-primary/30 bg-background">
+              {transcribing && (
+                <>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Loader2 className="size-4 animate-spin" />
+                      Transcribing…
+                    </CardTitle>
+                    <CardDescription>Processing your recording</CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-1 items-center justify-center">
+                    <p className="text-sm text-muted-foreground">This may take a few seconds</p>
+                  </CardContent>
+                </>
+              )}
+
+              {!transcribing && transcriptionError && (
+                <>
+                  <CardHeader>
+                    <CardTitle className="text-destructive">Transcription Failed</CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-3">
+                    <p className="text-sm text-destructive">{transcriptionError}</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-fit"
+                      onClick={() => {
+                        setTranscriptionError(null)
+                        setTranscription(null)
+                      }}
+                    >
+                      Back to chunks
+                    </Button>
+                  </CardContent>
+                </>
+              )}
+
+              {!transcribing && transcription && (
+                <>
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle>Transcription</CardTitle>
+                        <CardDescription>
+                          {transcription.speakerCount} speaker{transcription.speakerCount !== 1 ? "s" : ""} detected
+                        </CardDescription>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-xs text-muted-foreground"
+                        onClick={() => {
+                          setTranscription(null)
+                          setTranscriptionError(null)
+                        }}
+                      >
+                        <X className="mr-1 size-3" />
+                        Close
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-3">
+                    {transcription.segments.map((seg, i) => (
+                      <div key={`${seg.startTime}-${i}`} className="flex gap-3 text-sm">
+                        <span className="shrink-0 rounded bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary">
+                          {seg.speakerLabel}
+                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          <p>{seg.text}</p>
+                          <span className="text-[10px] text-muted-foreground tabular-nums">
+                            {seg.startTime.toFixed(1)}s – {seg.endTime.toFixed(1)}s
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </>
+              )}
+            </Card>
+          )}
+        </div>
       )}
     </div>
   )
