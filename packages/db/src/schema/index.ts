@@ -1,4 +1,4 @@
-import { integer, pgEnum, pgTable, real, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, integer, pgEnum, pgTable, real, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const recordingStatusEnum = pgEnum("recording_status", [
   "recording",
@@ -34,4 +34,25 @@ export const speakerSegments = pgTable("speaker_segments", {
   startTime: real("start_time").notNull(),
   endTime: real("end_time").notNull(),
   confidence: real("confidence"),
+});
+
+export const chunks = pgTable("chunks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  recordingId: uuid("recording_id")
+    .references(() => recordings.id, { onDelete: "cascade" })
+    .notNull(),
+  chunkIndex: integer("chunk_index").notNull(),
+  bucketKey: text("bucket_key").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const chunkAcks = pgTable("chunk_acks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  chunkId: uuid("chunk_id")
+    .references(() => chunks.id, { onDelete: "cascade" })
+    .notNull(),
+  bucketVerified: boolean("bucket_verified").default(false).notNull(),
+  ackedAt: timestamp("acked_at").defaultNow().notNull(),
 });

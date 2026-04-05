@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
+import { chunkRoutes } from "./routes/chunks";
 import { transcribeRoutes } from "./routes/transcribe";
 
 const app = new Hono();
@@ -21,5 +22,6 @@ app.get("/", (c) => {
 });
 
 app.route("/api", transcribeRoutes);
+app.route("/api", chunkRoutes);
 
 export default app;

@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
-import { Download, Languages, Mic, Pause, Play, Square, Trash2 } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Check, CloudUpload, Download, Languages, Loader2, Mic, Pause, Play, Square, Trash2, X } from "lucide-react"
 
 import { env } from "@my-better-t-app/env/web"
 
@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@my-better-t-app/ui/components/card"
 import { LiveWaveform } from "@/components/ui/live-waveform"
+import { useChunkSync, type ChunkSyncStatus } from "@/hooks/use-chunk-sync"
 import { useRecorder, type WavChunk } from "@/hooks/use-recorder"
 
 function formatTime(seconds: number) {
@@ -27,7 +28,20 @@ function formatDuration(seconds: number) {
   return `${seconds.toFixed(1)}s`
 }
 
-function ChunkRow({ chunk, index }: { chunk: WavChunk; index: number }) {
+function SyncIcon({ status }: { status?: ChunkSyncStatus }) {
+  switch (status) {
+    case "uploading":
+      return <Loader2 className="size-3 animate-spin text-blue-400" />
+    case "acked":
+      return <Check className="size-3 text-green-400" />
+    case "failed":
+      return <X className="size-3 text-red-400" />
+    default:
+      return <CloudUpload className="size-3 text-muted-foreground/50" />
+  }
+}
+
+function ChunkRow({ chunk, index, syncStatus }: { chunk: WavChunk; index: number; syncStatus?: ChunkSyncStatus }) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [playing, setPlaying] = useState(false)
 
@@ -64,6 +78,7 @@ function ChunkRow({ chunk, index }: { chunk: WavChunk; index: number }) {
       </span>
       <span className="text-xs tabular-nums">{formatDuration(chunk.duration)}</span>
       <span className="text-[10px] text-muted-foreground">16kHz PCM</span>
+      <SyncIcon status={syncStatus} />
       <div className="ml-auto flex gap-1">
         <Button variant="ghost" size="icon-xs" onClick={toggle}>
           {playing ? <Square className="size-3" /> : <Play className="size-3" />}
@@ -97,6 +112,10 @@ export default function RecorderPage() {
   const { status, start, stop, pause, resume, chunks, elapsed, stream, clearChunks } =
     useRecorder({ chunkDuration: 5, deviceId })
 
+  const [recordingId, setRecordingId] = useState<string | null>(null)
+  const { syncState, persistAndSync, clearSync } = useChunkSync({ recordingId })
+  const lastSyncedCount = useRef(0)
+
   const [transcribing, setTranscribing] = useState(false)
   const [transcription, setTranscription] = useState<TranscriptionResult | null>(null)
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
@@ -105,13 +124,31 @@ export default function RecorderPage() {
   const isPaused = status === "paused"
   const isActive = isRecording || isPaused
 
+  useEffect(() => {
+    if (chunks.length > lastSyncedCount.current && recordingId) {
+      for (let i = lastSyncedCount.current; i < chunks.length; i++) {
+        persistAndSync(chunks[i], i)
+      }
+      lastSyncedCount.current = chunks.length
+    }
+  }, [chunks, recordingId, persistAndSync])
+
   const handlePrimary = useCallback(() => {
     if (isActive) {
       stop()
     } else {
+      const newId = crypto.randomUUID()
+      setRecordingId(newId)
+      lastSyncedCount.current = 0
       start()
     }
   }, [isActive, stop, start])
+
+  const handleClearAll = useCallback(() => {
+    clearChunks()
+    clearSync()
+    lastSyncedCount.current = 0
+  }, [clearChunks, clearSync])
 
   const handleTranscribe = useCallback(async () => {
     if (chunks.length === 0) return
@@ -276,7 +313,12 @@ export default function RecorderPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
             {chunks.map((chunk, i) => (
-              <ChunkRow key={chunk.id} chunk={chunk} index={i} />
+              <ChunkRow
+                key={chunk.id}
+                chunk={chunk}
+                index={i}
+                syncStatus={syncState.find((s) => s.chunkIndex === i)?.status}
+              />
             ))}
             <div className="mt-2 flex items-center justify-between">
               <Button
@@ -292,7 +334,7 @@ export default function RecorderPage() {
                 variant="ghost"
                 size="sm"
                 className="gap-1.5 text-destructive"
-                onClick={clearChunks}
+                onClick={handleClearAll}
               >
                 <Trash2 className="size-3" />
                 Clear all
