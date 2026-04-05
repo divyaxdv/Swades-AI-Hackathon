@@ -165,8 +165,51 @@ Swades-AI-Hackathon/
 | `npm run db:start` | Start Docker containers |
 | `npm run db:stop` | Stop Docker containers |
 | `npm run db:down` | Remove Docker containers + volumes |
+| `npm run loadtest` | Run load test with Node.js (no install needed) |
+| `npm run loadtest:k6` | Run load test with k6 (requires k6 installed) |
 | `npm run check` | Run linter (Ultracite/Oxlint) |
 | `npm run fix` | Auto-fix lint + formatting issues |
+
+## Load Testing
+
+Target: **300,000 requests** to validate the chunk pipeline under heavy load.
+
+### Option 1: Node.js (no extra tools)
+
+```bash
+# Default: 1000 chunks, 50 concurrent
+npm run loadtest
+
+# Custom: 300K chunks, 200 concurrent
+TOTAL=300000 CONCURRENCY=200 npm run loadtest
+```
+
+### Option 2: k6 (more detailed metrics)
+
+```bash
+# Install k6
+brew install k6
+
+# Run
+npm run loadtest:k6
+```
+
+The k6 test ramps to 5,000 req/s sustained for 50 seconds (~300K total requests).
+
+### What the test does
+
+1. Creates a recording session on the server
+2. Uploads WAV chunks in parallel (upload → ack per chunk)
+3. Runs reconciliation after all uploads complete
+4. Reports latency percentiles (p50/p95/p99), throughput, and success rate
+5. Checks for missing chunks (bucket vs DB consistency)
+
+### What to validate
+
+- **No data loss** — every ack in the DB has a matching chunk in the bucket
+- **Throughput** — server handles sustained high req/s without dropping chunks
+- **Consistency** — reconciliation catches and repairs any mismatches
+- **Success rate** — should be > 95% under load
 
 ## Features
 

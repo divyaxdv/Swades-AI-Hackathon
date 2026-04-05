@@ -21,6 +21,8 @@
     "db:watch": "turbo -F @my-better-t-app/db db:watch",
     "db:stop": "turbo -F @my-better-t-app/db db:stop",
     "db:down": "turbo -F @my-better-t-app/db db:down",
+    "loadtest": "node load-tests/node-chunks.mjs",
+    "loadtest:k6": "k6 run load-tests/k6-chunks.js",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
