@@ -21,4 +21,4 @@ COPY packages/env packages/env
 COPY packages/config packages/config
 
 EXPOSE 3000
-CMD ["bun", "run", "apps/server/src/index.ts"]
+CMD ["sh", "-c", "cd packages/db && bunx drizzle-kit push && cd /app && bun run apps/server/src/index.ts"]

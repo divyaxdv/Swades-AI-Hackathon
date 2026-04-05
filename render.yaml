@@ -4,7 +4,6 @@ services:
     name: transcription-server
     plan: free
     dockerfilePath: ./Dockerfile.server
-    preDeployCommand: cd packages/db && bunx drizzle-kit push
     envVars:
       - key: DATABASE_URL
         fromDatabase:
